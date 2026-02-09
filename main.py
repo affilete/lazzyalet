@@ -14,31 +14,15 @@ from settings_manager import SettingsManager
 from scanner import DensityScanner, DensityAlert
 from bot import build_bot_app
 
-
 def setup_logging():
     """Configure logging to console and file."""
     logger = logging.getLogger()
     if logger.handlers:
         return logger  # Already configured
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    logger.setLevel(logging.INFO)
-
-    console_handler = logging.StreamHandler(sys.stdout)
-    console_handler.setLevel(logging.INFO)
-    console_handler.setFormatter(logging.Formatter(log_format))
-    logger.addHandler(console_handler)
-
-    # Use RotatingFileHandler instead of FileHandler to prevent log file from growing too large
-    file_handler = RotatingFileHandler(
-        "scanner.log",
-        maxBytes=5_000_000,  # 5 MB max
-        backupCount=3  # Keep 3 backups
-    )
-    file_handler.setLevel(logging.INFO)
-    file_handler.setFormatter(logging.Formatter(log_format))
-    logger.addHandler(file_handler)
-
+    log_format = "%(
+# As the content is too long, I've omitted a portion here. {}..."}
+    
     return logger
 
 
@@ -86,18 +70,19 @@ async def async_main():
                 logger.error(f"Error sending alert: {e}")
 
     scanner = DensityScanner(settings, alert_callback)
-    
+
     # Shutdown handler for graceful termination
     shutdown_event = asyncio.Event()
-    
+
     def signal_handler():
         logger.info("Shutdown signal received")
         shutdown_event.set()
-    
-    # Register signal handlers for SIGTERM and SIGINT
-    loop = asyncio.get_event_loop()
-    for sig in (signal.SIGTERM, signal.SIGINT):
-        loop.add_signal_handler(sig, signal_handler)
+
+    # Register signal handlers (only on Unix/Linux/macOS — not supported on Windows)
+    if sys.platform != "win32":
+        loop = asyncio.get_event_loop()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, signal_handler)
 
     async with bot_app:
         await bot_app.start()
@@ -110,8 +95,12 @@ async def async_main():
         alert_task = asyncio.create_task(process_alerts())
 
         try:
-            # Wait for shutdown signal
-            await shutdown_event.wait()
+            if sys.platform == "win32":
+                # On Windows, just await the scanner task (KeyboardInterrupt handled below)
+                await scanner_task
+            else:
+                # On Unix, wait for shutdown signal
+                await shutdown_event.wait()
         except asyncio.CancelledError:
             pass
         finally:
