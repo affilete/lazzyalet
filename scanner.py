@@ -8,7 +8,7 @@ import time
 import random
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Callable, Dict, Set, Tuple
+from typing import Optional, Callable, Dict, Tuple
 import ccxt.async_support as ccxt_async
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,8 @@ except ImportError:
 
 from config import (
     SUPPORTED_EXCHANGES,
-    RATE_LIMIT_SLEEP,
     MAX_RETRIES,
     RETRY_DELAY,
-    ALERT_TEMPLATE,
-    ALERT_COOLDOWN,
     EXCHANGE_TIMEOUT,
     EXCHANGE_DEPTH_LIMITS,
     EXCHANGE_TRADE_URLS,
@@ -38,10 +35,6 @@ from config import (
     ALERT_SIZE_SURGE_THRESHOLD,
     ALERT_PRICE_CHANGE_THRESHOLD,
     DENSITY_MISS_LIMIT,
-    BATCH_SIZE,
-    EXCHANGE_RATE_LIMITS,
-    EXCHANGE_SCAN_CONFIG,
-    DEFAULT_SCAN_CONFIG,
     SKIP_PREFIXES,
     SKIP_PATTERNS,
     EXCHANGE_CONCURRENCY,
@@ -52,8 +45,6 @@ from config import (
     WS_MAX_SYMBOLS_PER_EXCHANGE,
 )
 from settings_manager import SettingsManager
-
-logger = logging.getLogger(__name__)
 
 
 # ===========================

@@ -120,7 +120,8 @@ MAX_RETRIES = 3  # Maximum number of retries for failed requests
 RETRY_DELAY = 5  # Seconds to wait before retrying
 
 # Cooldown Settings
-ALERT_COOLDOWN = 300  # Seconds (5 minutes) - prevent duplicate alerts
+# Alert cooldown prevents duplicate alerts
+ALERT_COOLDOWN_SECONDS = 300  # 5 minutes
 
 # Exchange API Settings
 EXCHANGE_TIMEOUT = 30000  # 30 seconds in milliseconds
@@ -153,7 +154,7 @@ EXCHANGE_MARKET_TYPE = {
 }
 
 # Anti-spam settings
-ALERT_COOLDOWN_SECONDS = 300  # 5 minutes
+# ALERT_COOLDOWN_SECONDS defined above (line 122)
 ALERT_SIZE_CHANGE_THRESHOLD = 0.20  # 20% size change to ignore
 ALERT_SIZE_SURGE_THRESHOLD = 0.50  # 50% size increase to resend
 ALERT_PRICE_CHANGE_THRESHOLD = 0.005  # 0.5% price change
@@ -191,11 +192,11 @@ EXCHANGE_CONCURRENCY = {
     "lither": 10,
 }
 
-# Priority tickers — scanned first in each cycle
-PRIORITY_TICKERS = [
+# Priority tickers — scanned first in each cycle (frozenset for O(1) lookup)
+PRIORITY_TICKERS = frozenset([
     "BTC", "ETH", "SOL", "XRP", "DOGE", "PEPE", "WIF", 
     "HYPE", "SUI", "AAVE", "BNB", "LINK", "SEI", "PUMP"
-]
+])
 
 # WebSocket configuration
 # WS_ENABLED: Set to False to disable WebSocket and use REST only. When enabled,
