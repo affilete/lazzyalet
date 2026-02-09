@@ -6,3 +6,6 @@ scanner.log
 *.log
 .idea/
 .vscode/
+:memory:
+*.db
+*.sqlite
