@@ -4,10 +4,13 @@ Provides thread-safe access to settings and handles JSON persistence.
 """
 
 import json
+import logging
 import threading
 from pathlib import Path
 from typing import Optional, Dict, Any, List
 from config import DEFAULT_SETTINGS, DEFAULT_EXCHANGE_SETTINGS
+
+logger = logging.getLogger(__name__)
 
 
 class SettingsManager:
@@ -19,6 +22,19 @@ class SettingsManager:
         self._settings = {}
         self._load_settings()
     
+    def _deep_merge(self, base: dict, override: dict) -> dict:
+        """
+        Deep merge two dictionaries.
+        Values from override take precedence, but nested dicts are merged recursively.
+        """
+        result = base.copy()
+        for key, value in override.items():
+            if key in result and isinstance(result[key], dict) and isinstance(value, dict):
+                result[key] = self._deep_merge(result[key], value)
+            else:
+                result[key] = value
+        return result
+    
     def _load_settings(self):
         """Load settings from JSON file, merge with defaults."""
         with self._lock:
@@ -26,10 +42,10 @@ class SettingsManager:
                 try:
                     with open(self.settings_file, 'r') as f:
                         loaded = json.load(f)
-                    # Merge loaded settings with defaults
-                    self._settings = {**DEFAULT_SETTINGS, **loaded}
+                    # Deep merge loaded settings with defaults to preserve nested structure
+                    self._settings = self._deep_merge(DEFAULT_SETTINGS, loaded)
                 except (json.JSONDecodeError, IOError) as e:
-                    print(f"Error loading settings: {e}, using defaults")
+                    logger.error(f"Error loading settings: {e}, using defaults")
                     self._settings = DEFAULT_SETTINGS.copy()
             else:
                 # Create file with empty dict (will use defaults)
@@ -43,7 +59,7 @@ class SettingsManager:
             with open(self.settings_file, 'w') as f:
                 json.dump(self._settings, f, indent=2)
         except IOError as e:
-            print(f"Error saving settings: {e}")
+            logger.error(f"Error saving settings: {e}")
     
     # Global Settings Properties
     
@@ -428,45 +444,49 @@ class SettingsManager:
         html += "<b>Global Settings:</b>\n"
         html += f"• Alerts Enabled: {'✅' if settings.get('alerts_enabled') else '❌'}\n"
         html += f"• Chat ID: <code>{settings.get('chat_id')}</code>\n"
-        html += f"• Min Size: ${settings.get('min_size', 0):,.0f}\n"
-        html += f"• Distance: {settings.get('distance_pct', 0):.2f}%\n"
-        html += f"• Scan Interval: {settings.get('scan_interval', 0)}s\n"
-        html += f"• Orderbook Depth: {settings.get('orderbook_depth', 0)}\n"
+        html += f"• Distance: {settings.get('global_distance_pct', DEFAULT_SETTINGS['global_distance_pct']):.2f}%\n"
+        html += f"• Scan Interval: {settings.get('scan_interval', DEFAULT_SETTINGS['scan_interval'])}s\n"
+        html += f"• Orderbook Depth: {settings.get('orderbook_depth', DEFAULT_SETTINGS['orderbook_depth'])}\n"
         html += f"• Quote Currencies: {', '.join(settings.get('quote_currencies', []))}\n"
         html += "\n"
         
-        # Blacklist
-        blacklist = settings.get('blacklist', [])
-        html += f"<b>Blacklist ({len(blacklist)}):</b>\n"
+        # Global Blacklist
+        blacklist = settings.get('global_blacklist', [])
+        html += f"<b>Global Blacklist ({len(blacklist)}):</b>\n"
         if blacklist:
             html += f"• {', '.join(blacklist)}\n"
         else:
             html += "• None\n"
         html += "\n"
         
-        # Ticker Overrides
-        ticker_overrides = settings.get('ticker_overrides', {})
-        html += f"<b>Ticker Overrides ({len(ticker_overrides)}):</b>\n"
+        # Global Ticker Overrides
+        ticker_overrides = settings.get('global_ticker_overrides', {})
+        html += f"<b>Global Ticker Overrides ({len(ticker_overrides)}):</b>\n"
         if ticker_overrides:
-            for ticker, overrides in ticker_overrides.items():
-                html += f"• {ticker}: min_size=${overrides.get('min_size', 0):,.0f}\n"
+            for ticker, min_size in ticker_overrides.items():
+                html += f"• {ticker}: min_size=${min_size:,.0f}\n"
         else:
             html += "• None\n"
         html += "\n"
         
         # Exchange Settings
-        exchange_settings = settings.get('exchange_settings', {})
+        exchange_settings = settings.get('exchanges', {})
         html += f"<b>Exchange Settings ({len(exchange_settings)}):</b>\n"
         if exchange_settings:
             for exchange, exch_settings in exchange_settings.items():
                 html += f"• <b>{exchange.upper()}</b>:\n"
-                for key, value in exch_settings.items():
-                    if key == "min_size":
-                        html += f"  - {key}: ${value:,.0f}\n"
-                    elif key == "distance_pct":
-                        html += f"  - {key}: {value:.2f}%\n"
-                    else:
-                        html += f"  - {key}: {value}\n"
+                html += f"  - min_size: ${exch_settings.get('min_size', DEFAULT_EXCHANGE_SETTINGS['min_size']):,.0f}\n"
+                html += f"  - min_lifetime: {exch_settings.get('min_lifetime', DEFAULT_EXCHANGE_SETTINGS['min_lifetime'])}s\n"
+                
+                # Exchange ticker overrides
+                exch_ticker_overrides = exch_settings.get('ticker_overrides', {})
+                if exch_ticker_overrides:
+                    html += f"  - ticker_overrides: {len(exch_ticker_overrides)} tickers\n"
+                
+                # Exchange blacklist
+                exch_blacklist = exch_settings.get('blacklist', [])
+                if exch_blacklist:
+                    html += f"  - blacklist: {len(exch_blacklist)} tickers\n"
         else:
             html += "• None\n"
         html += "\n"

@@ -6,8 +6,9 @@ Runs the Telegram bot and scanner concurrently in a single async event loop.
 import argparse
 import asyncio
 import logging
+import signal
 import sys
-from pathlib import Path
+from logging.handlers import RotatingFileHandler
 
 from settings_manager import SettingsManager
 from scanner import DensityScanner, DensityAlert
@@ -28,7 +29,12 @@ def setup_logging():
     console_handler.setFormatter(logging.Formatter(log_format))
     logger.addHandler(console_handler)
 
-    file_handler = logging.FileHandler("scanner.log")
+    # Use RotatingFileHandler instead of FileHandler to prevent log file from growing too large
+    file_handler = RotatingFileHandler(
+        "scanner.log",
+        maxBytes=5_000_000,  # 5 MB max
+        backupCount=3  # Keep 3 backups
+    )
     file_handler.setLevel(logging.INFO)
     file_handler.setFormatter(logging.Formatter(log_format))
     logger.addHandler(file_handler)
@@ -80,6 +86,18 @@ async def async_main():
                 logger.error(f"Error sending alert: {e}")
 
     scanner = DensityScanner(settings, alert_callback)
+    
+    # Shutdown handler for graceful termination
+    shutdown_event = asyncio.Event()
+    
+    def signal_handler():
+        logger.info("Shutdown signal received")
+        shutdown_event.set()
+    
+    # Register signal handlers for SIGTERM and SIGINT
+    loop = asyncio.get_event_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, signal_handler)
 
     async with bot_app:
         await bot_app.start()
@@ -92,13 +110,19 @@ async def async_main():
         alert_task = asyncio.create_task(process_alerts())
 
         try:
-            await scanner_task
+            # Wait for shutdown signal
+            await shutdown_event.wait()
         except asyncio.CancelledError:
             pass
         finally:
             logger.info("Shutting down...")
             scanner.stop()
+            scanner_task.cancel()
             alert_task.cancel()
+            try:
+                await scanner_task
+            except asyncio.CancelledError:
+                pass
             try:
                 await alert_task
             except asyncio.CancelledError:

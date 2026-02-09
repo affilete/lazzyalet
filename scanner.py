@@ -8,7 +8,7 @@ import time
 import random
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Optional, Callable, Dict, Set, Tuple
+from typing import Optional, Callable, Dict, Tuple
 import ccxt.async_support as ccxt_async
 
 logger = logging.getLogger(__name__)
@@ -24,11 +24,8 @@ except ImportError:
 
 from config import (
     SUPPORTED_EXCHANGES,
-    RATE_LIMIT_SLEEP,
     MAX_RETRIES,
     RETRY_DELAY,
-    ALERT_TEMPLATE,
-    ALERT_COOLDOWN,
     EXCHANGE_TIMEOUT,
     EXCHANGE_DEPTH_LIMITS,
     EXCHANGE_TRADE_URLS,
@@ -38,10 +35,6 @@ from config import (
     ALERT_SIZE_SURGE_THRESHOLD,
     ALERT_PRICE_CHANGE_THRESHOLD,
     DENSITY_MISS_LIMIT,
-    BATCH_SIZE,
-    EXCHANGE_RATE_LIMITS,
-    EXCHANGE_SCAN_CONFIG,
-    DEFAULT_SCAN_CONFIG,
     SKIP_PREFIXES,
     SKIP_PATTERNS,
     EXCHANGE_CONCURRENCY,
@@ -52,8 +45,6 @@ from config import (
     WS_MAX_SYMBOLS_PER_EXCHANGE,
 )
 from settings_manager import SettingsManager
-
-logger = logging.getLogger(__name__)
 
 
 # ===========================
@@ -224,6 +215,9 @@ class DensityScanner:
         # Density lifetime tracking: (exchange, symbol, side, price_level) -> first_seen_timestamp
         self._density_tracker: Dict[Tuple[str, str, str, float], float] = {}
         
+        # Density index for O(1) lookups: (exchange, symbol, side) -> set of (exchange, symbol, side, price_level) keys
+        self._density_index: Dict[Tuple[str, str, str], set] = {}
+        
         # Miss counter for cleanup: (exchange, symbol, side, price_level) -> miss_count
         self._miss_counter: Dict[Tuple[str, str, str, float], int] = {}
         
@@ -231,6 +225,25 @@ class DensityScanner:
         self._contract_size_cache: Dict[str, float] = {}
         
         logger.info("DensityScanner initialized")
+    
+    @staticmethod
+    def _extract_base_symbol(symbol: str) -> str:
+        """
+        Extract base symbol from various symbol formats.
+        Examples: 
+          BTC/USDT -> BTC
+          BTC/USDT:USDT -> BTC
+          BTC-USD -> BTC
+          BTC -> BTC
+        """
+        if '/' in symbol:
+            return symbol.split('/')[0]
+        elif ':' in symbol:
+            return symbol.split(':')[0].split('/')[0]
+        elif '-' in symbol:
+            return symbol.split('-')[0]
+        else:
+            return symbol
     
     async def _initialize_exchanges(self):
         """Initialize exchange clients."""
@@ -283,21 +296,16 @@ class DensityScanner:
     def _sort_symbols_by_priority(self, symbols: list) -> list:
         """
         Sort symbols by priority - priority tickers first, then normal tickers.
-        Priority tickers are those in PRIORITY_TICKERS list.
+        Priority tickers are those in PRIORITY_TICKERS frozenset.
         """
         priority = []
         normal = []
         
         for symbol in symbols:
-            # Extract base symbol from different formats: BTC/USDT, BTC/USDT:USDT, BTC-USD
-            if '/' in symbol:
-                base = symbol.split('/')[0]
-            elif '-' in symbol:
-                base = symbol.split('-')[0]
-            else:
-                base = symbol
+            # Extract base symbol using static method
+            base = self._extract_base_symbol(symbol)
             
-            # Check if base is in priority list (case-insensitive)
+            # Check if base is in priority set (O(1) lookup with frozenset)
             if base.upper() in PRIORITY_TICKERS:
                 priority.append(symbol)
             else:
@@ -535,41 +543,51 @@ class DensityScanner:
         """
         Get lifetime of a density in seconds.
         Densities are matched by exchange, symbol, side, and price within 0.1%.
+        Optimized with O(1) index lookup.
         """
         current_time = time.time()
+        index_key = (exchange, symbol, side)
         
-        # Find matching density (price within 0.1%)
-        for key, first_seen in self._density_tracker.items():
-            tracked_exchange, tracked_symbol, tracked_side, tracked_price = key
-            
-            if (tracked_exchange == exchange and 
-                tracked_symbol == symbol and 
-                tracked_side == side):
+        # Use index for O(1) lookup instead of scanning all densities
+        if index_key in self._density_index:
+            # Only check densities for this specific exchange/symbol/side
+            for full_key in self._density_index[index_key]:
+                tracked_exchange, tracked_symbol, tracked_side, tracked_price = full_key
+                
                 # Check if price is within 0.1%
                 price_diff_pct = abs(price - tracked_price) / tracked_price if tracked_price > 0 else 1.0
                 if price_diff_pct <= 0.001:  # 0.1%
-                    return int(current_time - first_seen)
+                    first_seen = self._density_tracker.get(full_key)
+                    if first_seen is not None:
+                        return int(current_time - first_seen)
         
-        # New density - track it
+        # New density - track it with index
         key = (exchange, symbol, side, price)
         self._density_tracker[key] = current_time
         self._miss_counter[key] = 0
         
+        # Add to index for O(1) future lookups
+        if index_key not in self._density_index:
+            self._density_index[index_key] = set()
+        self._density_index[index_key].add(key)
+        
         return 0
     
     def _mark_density_seen(self, exchange: str, symbol: str, side: str, price: float):
-        """Mark a density as seen (reset miss counter)."""
-        # Find matching density
-        for key in list(self._miss_counter.keys()):
-            tracked_exchange, tracked_symbol, tracked_side, tracked_price = key
-            
-            if (tracked_exchange == exchange and 
-                tracked_symbol == symbol and 
-                tracked_side == side):
+        """Mark a density as seen (reset miss counter). Optimized with O(1) index lookup."""
+        index_key = (exchange, symbol, side)
+        
+        # Use index for O(1) lookup instead of scanning all densities
+        if index_key in self._density_index:
+            # Only check densities for this specific exchange/symbol/side
+            for full_key in self._density_index[index_key]:
+                tracked_exchange, tracked_symbol, tracked_side, tracked_price = full_key
+                
                 # Check if price is within 0.1%
                 price_diff_pct = abs(price - tracked_price) / tracked_price if tracked_price > 0 else 1.0
                 if price_diff_pct <= 0.001:  # 0.1%
-                    self._miss_counter[key] = 0
+                    if full_key in self._miss_counter:
+                        self._miss_counter[full_key] = 0
                     return
     
     def _cleanup_missing_densities(self):
@@ -586,8 +604,16 @@ class DensityScanner:
             if key in self._miss_counter:
                 del self._miss_counter[key]
             
-            # Also clean up cooldown for this density
+            # Remove from index
             exchange, symbol, side, _ = key
+            index_key = (exchange, symbol, side)
+            if index_key in self._density_index:
+                self._density_index[index_key].discard(key)
+                # Clean up empty index entries
+                if not self._density_index[index_key]:
+                    del self._density_index[index_key]
+            
+            # Also clean up cooldown for this density
             cooldown_key = (exchange, symbol, side)
             if cooldown_key in self._alert_cooldowns:
                 del self._alert_cooldowns[cooldown_key]
@@ -604,15 +630,7 @@ class DensityScanner:
         
         try:
             # Extract base symbol for blacklist check
-            # Handle different symbol formats: BTC/USDT, BTC/USDT:USDT, BTC-USD
-            if '/' in symbol:
-                base_symbol = symbol.split('/')[0]
-            elif ':' in symbol:
-                base_symbol = symbol.split(':')[0].split('/')[0]
-            elif '-' in symbol:
-                base_symbol = symbol.split('-')[0]
-            else:
-                base_symbol = symbol
+            base_symbol = self._extract_base_symbol(symbol)
             
             # Check blacklist (both global and exchange-specific)
             if self.settings.is_blacklisted(exchange_name, base_symbol):
@@ -808,24 +826,18 @@ class DensityScanner:
         
         logger.debug(f"Starting parallel scan of {total_symbols} symbols on {exchange_state.label} (concurrency: {max_concurrent})")
         
-        # Track results
-        success_count = 0
-        error_count = 0
+        # Track results using lists (thread-safe append)
+        results = []
         
         async def scan_with_limit(symbol):
             """Scan symbol with semaphore rate limiting."""
-            nonlocal success_count, error_count
-            
             async with semaphore:
                 if not self._running:
                     return
                 
                 try:
                     result = await self._scan_symbol(exchange_state, symbol)
-                    if result:
-                        success_count += 1
-                    else:
-                        error_count += 1
+                    results.append(result)
                 except Exception as e:
                     if '429' in str(e) or 'rate limit' in str(e).lower():
                         # Add jitter to avoid thundering herd when many tasks hit rate limit
@@ -834,7 +846,7 @@ class DensityScanner:
                         await asyncio.sleep(2 + jitter)
                     else:
                         logger.debug(f"Error scanning {symbol} on {exchange_name}: {e}")
-                    error_count += 1
+                    results.append(False)
         
         # Create tasks for all symbols
         tasks = [scan_with_limit(symbol) for symbol in symbols]
@@ -842,6 +854,10 @@ class DensityScanner:
         # Execute all tasks concurrently (limited by semaphore)
         # Note: Semaphore prevents all tasks from running at once, controlling concurrency
         await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Count results
+        success_count = sum(1 for r in results if r is True)
+        error_count = len(results) - success_count
         
         # Update error counter based on scan results
         if error_count > 0:
@@ -862,14 +878,7 @@ class DensityScanner:
         while self._running and reconnect_count < WS_MAX_RECONNECTS:
             try:
                 # Extract base symbol for blacklist check
-                if '/' in symbol:
-                    base_symbol = symbol.split('/')[0]
-                elif ':' in symbol:
-                    base_symbol = symbol.split(':')[0].split('/')[0]
-                elif '-' in symbol:
-                    base_symbol = symbol.split('-')[0]
-                else:
-                    base_symbol = symbol
+                base_symbol = self._extract_base_symbol(symbol)
                 
                 # Check blacklist
                 if self.settings.is_blacklisted(exchange_name, base_symbol):
@@ -966,15 +975,8 @@ class DensityScanner:
         # Filter to only priority symbols for WebSocket
         ws_symbols = []
         for symbol in exchange_state.symbols:
-            # Extract base symbol
-            if '/' in symbol:
-                base = symbol.split('/')[0]
-            elif ':' in symbol:
-                base = symbol.split(':')[0].split('/')[0]
-            elif '-' in symbol:
-                base = symbol.split('-')[0]
-            else:
-                base = symbol
+            # Extract base symbol using static method
+            base = self._extract_base_symbol(symbol)
             
             # Check if base is in priority tickers
             if base.upper() in PRIORITY_TICKERS:
@@ -1105,6 +1107,7 @@ class DensityScanner:
         """Main scanner loop with WebSocket support and REST fallback."""
         self._running = True
         logger.info("Starting density scanner...")
+        ws_tasks = []  # Track WS tasks for cleanup
         
         try:
             # Initialize exchanges
@@ -1123,7 +1126,6 @@ class DensityScanner:
                 logger.info(f"REST scanning will cover ALL symbols on all {len(all_exchanges)} exchanges")
                 
                 # Start WebSocket scanning tasks for WS-enabled exchanges (priority tickers only)
-                ws_tasks = []
                 for exchange_state in ws_exchanges:
                     task = asyncio.create_task(self._ws_scan_exchange(exchange_state))
                     ws_tasks.append(task)
@@ -1164,6 +1166,15 @@ class DensityScanner:
                         await asyncio.sleep(1)
         
         finally:
+            # Cancel all WebSocket tasks
+            if ws_tasks:
+                logger.info(f"Cancelling {len(ws_tasks)} WebSocket tasks...")
+                for task in ws_tasks:
+                    task.cancel()
+                # Wait for all tasks to be cancelled
+                await asyncio.gather(*ws_tasks, return_exceptions=True)
+                logger.info("WebSocket tasks cancelled")
+            
             await self._cleanup()
             logger.info("Scanner stopped")
     
