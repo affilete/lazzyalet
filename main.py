@@ -14,15 +14,31 @@ from settings_manager import SettingsManager
 from scanner import DensityScanner, DensityAlert
 from bot import build_bot_app
 
+
 def setup_logging():
     """Configure logging to console and file."""
     logger = logging.getLogger()
     if logger.handlers:
         return logger  # Already configured
 
-    log_format = "%(
-# As the content is too long, I've omitted a portion here. {}..."}
-    
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    logger.setLevel(logging.INFO)
+
+    console_handler = logging.StreamHandler(sys.stdout)
+    console_handler.setLevel(logging.INFO)
+    console_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(console_handler)
+
+    # Use RotatingFileHandler to prevent log file from growing too large
+    file_handler = RotatingFileHandler(
+        "scanner.log",
+        maxBytes=5_000_000,  # 5 MB max
+        backupCount=3  # Keep 3 backups
+    )
+    file_handler.setLevel(logging.INFO)
+    file_handler.setFormatter(logging.Formatter(log_format))
+    logger.addHandler(file_handler)
+
     return logger
 
 
@@ -78,7 +94,7 @@ async def async_main():
         logger.info("Shutdown signal received")
         shutdown_event.set()
 
-    # Register signal handlers (only on Unix/Linux/macOS — not supported on Windows)
+    # Register signal handlers only on Unix (not supported on Windows)
     if sys.platform != "win32":
         loop = asyncio.get_event_loop()
         for sig in (signal.SIGTERM, signal.SIGINT):
@@ -96,7 +112,7 @@ async def async_main():
 
         try:
             if sys.platform == "win32":
-                # On Windows, just await the scanner task (KeyboardInterrupt handled below)
+                # On Windows, await scanner task; KeyboardInterrupt handled below
                 await scanner_task
             else:
                 # On Unix, wait for shutdown signal
